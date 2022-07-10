@@ -1,21 +1,27 @@
 local biomeClass = require(script.Biome)
 local SimplexNoise = require(script.Simplex)
+local voronoi = require(script.Voronoi)
+
 local seed = math.random()
+local Size = 500
 
-local Equator = math.random(0,1000)
-SimplexNoise.Seed(seed)
+local Equator = Vector3.new(
+	300,
+	0,
+	300
+)
 
-local points = {}
-local size = 1000
 
-local TemperatureGradient = {
+local DominantPosition
+
+local Temperatures = {
 	Ice = {0,5},
 	--Tundra = {5,10},
 	RoughHills = {5,10},
 	Plains = {11,17},
 	Forest = {18,24},
-	Jungle = {25,30},
-	Desert = {31,50}
+	Jungle = {25,40},
+	Desert = {40,50}
 }
 
 local Materials = {
@@ -24,122 +30,154 @@ local Materials = {
 	RoughHills = Enum.Material.Slate,
 	Plains = Enum.Material.Grass,
 	Forest = Enum.Material.LeafyGrass,
-	Jungle = Enum.Material.CrackedLava,
+	Jungle = Enum.Material.Marble,
 	Desert = Enum.Material.Sand
 }
 
-for i = 1, size do
-	points[i] = Vector3.new(
-		math.random(1,size),
-		0, 
-		math.random(1,size)) 
-end
-
-local function shallowCopy(original)
-	local copy = {}
-	for key, value in pairs(original) do
-		copy[key] = value
-	end
-	return copy
-end	
-
-function valueToIndex(tab,val)
-	for i,v in pairs(tab) do
-		if v == val then
-			return i
-		end
-	end
-end
-
-function shuffle(array)
-	local output = { }
-	local random = math.random
-
-	for index = 1, #array do
-		local offset = index - 1
-		local value = array[index]
-		local randomIndex = offset*random()
-		local flooredIndex = randomIndex - randomIndex%1
-
-		if flooredIndex == offset then
-			output[#output + 1] = value
-		else
-			output[#output + 1] = output[flooredIndex + 1]
-			output[flooredIndex + 1] = value
-		end
-	end
-
-	return output
-end
-
-function GetSortedMagnitudeArray(arrr, origin, ascending)
-	local match = {}    
-	local arr = shallowCopy(arrr)
-	ascending = ascending or true        
+function Total(arr)
+	local c = 0
 	for i,v in pairs(arr) do
-		local mag = (v-origin).Magnitude
-		match[mag] = v
-		arr[i] = mag
+		v += c
 	end
-
-	table.sort(arr,function(a,b)
-		if a and b then
-			if ascending then
-				return a < b
-			else
-				return a > b
-			end
-		end
-	end)        
-
-	local final = {}     
-	
-	for i,v in pairs(arr) do
-		if match[v] then
-			final[i] = match[v]
-		end
-	end
-	return valueToIndex(points,final[1])
+	return c
 end
 
 function getBiome(temp)
-	for i,v in pairs(TemperatureGradient) do
+	for i,v in pairs(Temperatures) do
 		if temp >= v[1] and temp <= v[2] then
 			return i
 		end
 	end
 end
+
+function diviseUntilSmall(num)
+	for i = 1,10000000,10 do
+		if(num/i) < 1 then
+			return (num/i)
+		end
+	end
+end
+
+function ManhattanDistance(a, b)
+	local abs = math.abs
+	return abs(a.X - b.X) + abs(a.Y - b.Y) + abs(a.Z - b.Z);
+end
+
+--[[function FBM(x, z,CHx,CHz)
+	local y = 0
+	local amp = amplitude
+	local freq = frequency
+	for i = 1,octaves do
+		y = (y + (amp * math.noise((x + CHx+seed) / freq, (z + CHz+seed) / freq)))
+		freq = (freq * lacunarity)
+		amp = (amp * gain)
+	end
+	return y
+end]]
+
 function ridgenoise(nx, ny)
 	return 2 * (math.abs(math.noise(nx+seed, ny+seed)));
 end
 
-function GenerateHeightmap(size,ChunkX,ChunkZ)
+function GenerateTemperature(X, Z,size)
+	local latitude = math.abs((Equator.X - X) + (Equator.Z - Z))
+	local temp = math.ceil(((latitude / size) * -35) - (0) * 2 + 50)
+	if temp < 0 then
+		temp = 0
+	end
+	return temp
+end
+
+function ClosestPoint(Points, Position)
+	local ClosestMagnitude, ClosestPoint = 10000,Vector3.new()
+	for i,Point in pairs(Points) do
+		local Magnitude = ManhattanDistance(Position, Point.Position)--(Point.Position - Position).Magnitude
+		if Magnitude < ClosestMagnitude then
+			ClosestMagnitude = Magnitude
+			ClosestPoint = Point	
+		end
+	end
+	--if DominantPosition == ClosestPoint.Position then
+	--	--print(DominantPosition)
+	--else
+	--	DominantPosition = ClosestPoint.Position
+	--end
+	return ClosestPoint	
+end
+
+function CalculateWeight(Array)
+	local Total = 0
+	
+	for i,v in pairs(Array) do
+		Total += v
+	end
+	
+	local Weights = {}
+	for i,v in pairs(Array) do
+		Weights[i] = (v/Total)
+	end
+	return Weights
+end
+
+function AssignCellPositions(Points, Size, ChunkX,ChunkZ)
+	local Positions = {}
+	local Totals = {}
+	for x = 1,Size do
+		Positions[x] = {}
+		for z = 1,Size do
+			local PX,PZ = (ChunkX + x), ChunkZ + z
+			local Point = ClosestPoint(Points, Vector3.new(PX,0,PZ)) --Voronoi implementation!
+			local Temperature = GenerateTemperature(Point.X,Point.Z, Size)
+			local Biome = getBiome(Temperature)
+			Positions[x][z] = {Biome = Biome, Temp = Temperature}
+			if Totals[Biome] then
+				Totals[Biome] += 1
+			else
+				Totals[Biome] = 0
+			end
+		end
+	end
+	return Positions, Totals
+end
+
+function GenerateHeightmap(size,ChunkX,ChunkZ, Points)
 	local heightmap = {}
 	local tab = {}
+	local Cells,Weights = AssignCellPositions(Points, size, ChunkX, ChunkZ)
+	Weights = CalculateWeight(Weights)
+	
+	local LastBiome
+	local LastY
+	
 	for x = 1,size do
 		local hx = {}
-		heightmap[x] = hx
 		for z = 1,size do
-			local latitude = math.abs((Equator - ChunkZ+z) + (Equator - ChunkX+x))
-			local temp = math.ceil(((latitude / size) * -25) - (0) * 2 + 50)
+			local biome = Cells[x][z].Biome
+			local y = biomeClass[biome] or biomeClass.Forest
+			y = y(x,ChunkX,seed,z,ChunkZ) + 1
 			
-			if temp < 0 then
-				temp = 0
-			end
-			
-			local biome = getBiome(temp)
-			local y = 0
-			if biomeClass[biome] then
-				y = biomeClass[biome](x,ChunkX,seed,z,ChunkZ)
-			end
-			hx[z] = y
-			--Implementing Voronoi Diagram into Biome.. But it's too performance - Impactful
-			--GetSortedMagnitudeArray(points,Vector3.new(ChunkX+x,0,ChunkZ+z),true)
-			workspace.Terrain:FillBlock(CFrame.new(ChunkX+x,y,ChunkZ+z),Vector3.new(1,30,1),Materials[biome])
+			LastBiome = biome
+			LastY = y
+			--local Part = Instance.new("Part")
+			--Part.Name = tostring(x)..tostring(z)
+			--Part.Material = Materials[biome]
+			--Part.Size = Vector3.new(1,20,1)
+			--Part.CFrame = CFrame.new(ChunkX+x,y,ChunkZ+z)
+			--Part.Anchored = true
+			--Part.CanCollide = true
+			--Part.Parent = workspace
+			workspace.Terrain:FillBlock(CFrame.new(ChunkX+x,y,ChunkZ+z),Vector3.new(1,50,1),Materials[biome] or Enum.Material.Ground)
 		end
 	end
 	return heightmap
 
 end
 
-local heightmap = GenerateHeightmap(size,0,0)
+
+function DrawTrees()
+	local Diagram = voronoi.new(CFrame.new(),CFrame.new(Size,1,Size),45)
+	local Points = Diagram:GeneratePoints()
+	local heightmap = GenerateHeightmap(Size,0,0, Points)
+end
+
+DrawTrees()
